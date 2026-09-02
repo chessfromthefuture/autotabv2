@@ -80,7 +80,11 @@ def cmd_preprocess(args):
     if args.limit:
         tracks = tracks[: args.limit]
     if not tracks:
-        raise SystemExit(f"no {args.dataset} tracks found under {root}")
+        raise SystemExit(
+            f"no {args.dataset} tracks found under {root}. Check the folder layout described in "
+            f"autotab/datasets/{args.dataset.replace('-', '_')}.py, or wait for a running "
+            "`autotab download` to finish (labels and audio must both be present)."
+        )
     jobs = [(t, args.mode) for t in tracks]
     print(
         f"preprocessing {len(jobs)} {args.dataset} track(s) from {root} "
@@ -107,7 +111,14 @@ def cmd_datasets(args):
 def cmd_download(args):
     from autotab.datasets.download import download
 
-    download(args.name, args.root, parts=args.parts, amps=args.amps, keep_zip=args.keep_zip)
+    download(
+        args.name,
+        args.root,
+        parts=args.parts,
+        amps=args.amps,
+        keep_zip=args.keep_zip,
+        workers=args.workers,
+    )
 
 
 def cmd_evaluate(args):
@@ -234,6 +245,7 @@ def build_parser():
     dl.add_argument("--parts", nargs="*", help="guitar-techs: zip names to fetch, e.g. P3_music")
     dl.add_argument("--amps", nargs="*", help="egdb: amp folders (default DI)")
     dl.add_argument("--keep-zip", action="store_true")
+    dl.add_argument("-w", "--workers", type=int, default=4, help="parallel downloads (egdb)")
     dl.set_defaults(func=cmd_download)
 
     tr = sub.add_parser("train", help="6-fold cross-validation training")

@@ -87,7 +87,9 @@ def _unzip(zip_path: Path, dest: Path, strip_top: bool, progress=print):
         zf.extractall(dest)
 
 
-def download(name: str, root: Path, parts=None, amps=None, keep_zip=False, progress=print) -> Path:
+def download(
+    name: str, root: Path, parts=None, amps=None, keep_zip=False, workers=4, progress=print
+) -> Path:
     root = Path(root)
     if name in MANUAL:
         progress(MANUAL[name])
@@ -103,28 +105,39 @@ def download(name: str, root: Path, parts=None, amps=None, keep_zip=False, progr
                 zip_path.unlink()
         return root
     if name == "egdb":
-        return download_egdb(root, amps=amps, progress=progress)
+        return download_egdb(root, amps=amps, workers=workers, progress=progress)
     raise KeyError(f"no downloader for {name!r}")
 
 
-def download_egdb(root: Path, amps=None, progress=print) -> Path:
-    """Fetch labels plus the requested amp folders (default: DI only, ~0.5 GB)."""
+def download_egdb(root: Path, amps=None, workers=4, progress=print) -> Path:
+    """Fetch labels plus the requested amp folders (default: DI only, ~0.5 GB).
+    Google Drive serves each file slowly, so a few parallel workers help a lot."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    root = Path(root)
+
     try:
         import gdown
     except ImportError as exc:
         raise ImportError('EGDB download needs gdown: uv pip install -e ".[data]"') from exc
 
-    wanted = {"audio_label", *(f"audio_{a}" for a in (amps or ["DI"]))}
+    wanted = ["audio_label", *(f"audio_{a}" for a in (amps or ["DI"]))]  # labels first
     progress(f"listing {EGDB_FOLDER}")
     files = gdown.download_folder(EGDB_FOLDER, skip_download=True, quiet=True)
     todo = [f for f in files if str(f.path).split("/")[0] in wanted]
-    progress(f"{len(todo)} files to fetch into {root}")
-    for i, f in enumerate(todo, 1):
+    todo.sort(key=lambda f: (wanted.index(str(f.path).split("/")[0]), str(f.path)))
+    have = sum((root / str(f.path)).exists() for f in todo)
+    progress(f"{len(todo)} files ({have} already present) -> {root}; about 2 MB each")
+    missing = [f for f in todo if not (root / str(f.path)).exists()]
+
+    def fetch(f):
         target = root / str(f.path)
-        if target.exists():
-            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         gdown.download(id=f.id, output=str(target), quiet=True)
-        if i % 25 == 0:
-            progress(f"  {i}/{len(todo)}")
+        return str(f.path)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for i, path in enumerate(pool.map(fetch, missing), 1):
+            progress(f"  [{have + i}/{len(todo)}] {path}")
+    progress(f"done. Next: autotab preprocess --dataset egdb --root {root} -j 8")
     return root
