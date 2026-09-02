@@ -46,25 +46,68 @@ def cmd_separate(args):
 def _preprocess_one(job):
     from autotab.TabDataReprGen import TabDataReprGen
 
-    name, mode = job
-    TabDataReprGen(mode=mode).load_and_save_repr_file(name)
-    return name
+    track, mode = job
+    out = TabDataReprGen(mode=mode).save_path / f"{track.stem}.npz"
+    if out.exists():
+        return track.stem
+    TabDataReprGen(mode=mode).save_track(track)
+    return track.stem
+
+
+def _dataset_options(args):
+    opts = {}
+    if args.amps:
+        opts["amps"] = args.amps
+    if args.mics:
+        opts["mics"] = args.mics
+    if args.timbres:
+        opts["timbres"] = args.timbres
+    if args.variants:
+        opts["variants"] = args.variants
+    return opts
 
 
 def cmd_preprocess(args):
-    from autotab.TabDataReprGen import TabDataReprGen
+    from autotab import datasets
+    from autotab.param import GUITARSET_DIR
 
-    names = TabDataReprGen(mode=args.mode).list_filenames()
+    root = args.root or (GUITARSET_DIR if args.dataset == "guitarset" else None)
+    if root is None:
+        raise SystemExit(f"--root is required for --dataset {args.dataset}")
+    tracks = datasets.tracks(args.dataset, root, **_dataset_options(args))
     if args.index is not None:
-        names = [names[i] for i in args.index]
-    jobs = [(n, args.mode) for n in names]
-    print(f"preprocessing {len(jobs)} file(s) with mode={args.mode}, {args.jobs} worker(s)")
+        tracks = [tracks[i] for i in args.index]
+    if args.limit:
+        tracks = tracks[: args.limit]
+    if not tracks:
+        raise SystemExit(f"no {args.dataset} tracks found under {root}")
+    jobs = [(t, args.mode) for t in tracks]
+    print(
+        f"preprocessing {len(jobs)} {args.dataset} track(s) from {root} "
+        f"with mode={args.mode}, {args.jobs} worker(s)"
+    )
     if args.jobs > 1:
         with Pool(args.jobs) as pool:
             pool.map(_preprocess_one, jobs)
     else:
         for job in jobs:
             _preprocess_one(job)
+
+
+def cmd_datasets(args):
+    from autotab import datasets
+
+    for name, desc in datasets.DESCRIPTIONS.items():
+        print(f"{name:13s} {desc}")
+    print("\nDownload: autotab download <name> --root <dir>")
+    print("          (synthtab, goat and guitarset print the manual steps)")
+    print("Prepare:  autotab preprocess --dataset <name> --root <dir> [--limit N] [-j 8]")
+
+
+def cmd_download(args):
+    from autotab.datasets.download import download
+
+    download(args.name, args.root, parts=args.parts, amps=args.amps, keep_zip=args.keep_zip)
 
 
 def cmd_evaluate(args):
@@ -167,11 +210,31 @@ def build_parser():
     ca.add_argument("-o", "--output", help="write the sweep table to this csv")
     ca.set_defaults(func=cmd_calibrate)
 
-    pp = sub.add_parser("preprocess", help="build npz representations from GuitarSet")
+    pp = sub.add_parser("preprocess", help="build npz representations from a dataset")
+    pp.add_argument(
+        "--dataset", default="guitarset", help="guitarset, synthtab, egdb, goat, idmt, guitar-techs"
+    )
+    pp.add_argument("--root", help="dataset folder (default for guitarset: data/GuitarSet)")
     pp.add_argument("--mode", choices=["c", "m", "cm", "s"], default="c")
-    pp.add_argument("--index", type=int, nargs="*", help="only these file indices (sorted)")
+    pp.add_argument("--index", type=int, nargs="*", help="only these track indices (sorted)")
+    pp.add_argument("--limit", type=int, help="stop after this many tracks")
+    pp.add_argument("--amps", nargs="*", help="egdb: amp folders, e.g. DI Marshall")
+    pp.add_argument("--mics", choices=["first", "all"], help="synthtab: microphones per guitar")
+    pp.add_argument("--timbres", nargs="*", help="synthtab: acoustic electric_clean …")
+    pp.add_argument("--variants", nargs="*", help="goat: di amp1 …")
     pp.add_argument("-j", "--jobs", type=int, default=1)
     pp.set_defaults(func=cmd_preprocess)
+
+    ds = sub.add_parser("datasets", help="list supported datasets")
+    ds.set_defaults(func=cmd_datasets)
+
+    dl = sub.add_parser("download", help="fetch an open dataset (or print manual steps)")
+    dl.add_argument("name", help="egdb, idmt, guitar-techs, synthtab, goat, guitarset")
+    dl.add_argument("--root", required=True, help="where to put it")
+    dl.add_argument("--parts", nargs="*", help="guitar-techs: zip names to fetch, e.g. P3_music")
+    dl.add_argument("--amps", nargs="*", help="egdb: amp folders (default DI)")
+    dl.add_argument("--keep-zip", action="store_true")
+    dl.set_defaults(func=cmd_download)
 
     tr = sub.add_parser("train", help="6-fold cross-validation training")
     tr.add_argument("--mode", choices=["c", "m", "cm", "s"], default="c")

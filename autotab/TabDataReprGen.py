@@ -176,6 +176,30 @@ class TabDataReprGen:
     def load_and_save_repr_nth_file(self, n: int) -> Path:
         return self.load_and_save_repr_file(self.get_nth_filename(n))
 
+    # ------------------------------------------------------- other datasets
+    def load_rep_and_labels_from_track(self, track) -> int:
+        """Same as load_rep_and_labels_from_raw_file but for any
+        :class:`autotab.datasets.base.Track` (SynthTab, EGDB, GOAT, …)."""
+        from autotab.datasets.base import notes_to_frame_frets
+
+        data, self.sr_original = read_audio_mono(track.audio)
+        self.sr_curr = self.sr_original
+        self.output["repr"] = np.swapaxes(self.preprocess_audio(data), 0, 1)
+        times = librosa.frames_to_time(
+            range(len(self.output["repr"])), sr=self.sr_curr, hop_length=self.hop_length
+        )
+        frets = notes_to_frame_frets(track.notes(), times)
+        self.output["labels"] = self.clean_labels(frets)
+        return len(frets)
+
+    def save_track(self, track) -> Path:
+        num_frames = self.load_rep_and_labels_from_track(track)
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        out = self.save_path / f"{track.stem}.npz"
+        self.save_data(out)
+        print(f"done: {track.dataset} {track.name}, {num_frames} frames -> {out}")
+        return out
+
     # -------------------------------------------------------------- inference
     def load_rep_from_raw_file(self, source) -> np.ndarray:
         """Turn an audio file (path or file-like object) into model input of

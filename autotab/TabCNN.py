@@ -142,7 +142,10 @@ class TabCNN:
         self.data_split = data_split
         self.partition = {"training": [], "validation": []}
         for ID in self.list_IDs:
-            guitarist = int(ID.split("_")[0])
+            prefix = ID.split("_")[0]
+            # GuitarSet files start with the player number 00..05; files from
+            # other datasets (synthtab-…, egdb-…) are always used for training.
+            guitarist = int(prefix) if prefix.isdigit() else -1
             key = "validation" if guitarist == data_split else "training"
             self.partition[key].append(ID)
 

@@ -106,7 +106,31 @@ To measure what isolation buys, a GuitarSet sample (with ground truth) was mixed
 | guitar + drums, bass, vocals | 0.35 | 0.26 |
 | same mix, Demucs-isolated guitar (`--isolate`) | **0.59** | **0.58** |
 
-The model itself was never trained on electric or mixed music, so for real songs the next lever is more diverse training data. See [`docs/datasets.md`](docs/datasets.md) for a survey of seven guitar datasets (SynthTab, EGDB, GOAT, GAPS, Guitar-TECHS, …) and a recommended order to add them.
+The model itself was never trained on electric or mixed music, so for real songs the next lever is more diverse training data.
+
+---
+
+## More training data
+
+Adapters in `autotab/datasets/` read six more guitar datasets into the same frame-label format, so they can be preprocessed and trained on with the standard commands:
+
+```bash
+.venv/bin/autotab datasets                                          # what is supported
+.venv/bin/autotab download egdb --root data/EGDB --amps DI          # open sets download directly
+.venv/bin/autotab preprocess --dataset egdb --root data/EGDB -j 8   # -> data/spec_repr/c/egdb-*.npz
+.venv/bin/autotab preprocess --dataset synthtab --root data/SynthTab --timbres acoustic
+.venv/bin/autotab train --id-file ''                                # GuitarSet folds validate, the rest trains
+```
+
+| dataset | what it adds | labels | access |
+|---|---|---|---|
+| SynthTab (2024) | 60 000 synthesised tracks, acoustic and clean / distorted / muted electric | per-string JAMS | open, Box, ~2 TB |
+| EGDB (2022) | 2 h real electric guitar × 6 amp tones | per-string MIDI | open, Google Drive |
+| GOAT (2025) | 5.9 h real electric DI, 29.5 h with amp augmentation | tablature tokens + aligned MIDI | request on Zenodo |
+| IDMT-SMT-Guitar (2014) | electric notes, chords, licks | XML string/fret | open, Zenodo |
+| Guitar-TECHS (2025) | techniques, excerpts, chords, scales; DI, amp and mic signals | MIDI | open, Zenodo |
+
+[`docs/datasets.md`](docs/datasets.md) has the full survey (including GAPS, which lacks string labels) and how each format is converted.
 
 ---
 
@@ -154,8 +178,9 @@ autotabv2/
 │   ├── TabPrediction.py    model output -> ASCII tablature
 │   ├── evaluate.py         metrics, silence-class calibration
 │   ├── separate.py         Demucs guitar isolation for full songs
+│   ├── datasets/           adapters: guitarset, synthtab, egdb, goat, idmt, guitar-techs
 │   ├── interpreter.py      GuitarSet .jams helpers (plots, MIDI)
-│   └── cli.py              `autotab predict | separate | evaluate | calibrate | preprocess | train`
+│   └── cli.py              `autotab predict | separate | evaluate | calibrate | datasets | download | preprocess | train`
 ├── streamlit/autotab_app.py
 ├── models/full_val0_75acc_weights.h5   pretrained weights (2021, CQT mode)
 ├── docs/                   dataset survey, calibration and isolation benchmarks
@@ -173,6 +198,7 @@ autotabv2/
 - **Runs again**: Python 3.12, TensorFlow 2.21 / Keras 3, librosa 1.0, NumPy 2, pandas 3. The 2021 `.h5` weights load unchanged and reproduce their 77 % per-string frame accuracy on GuitarSet.
 - **No cloud coupling**: Google Cloud Storage code, credentials and the Heroku/GCP deploy scripts are gone; everything is local paths.
 - **Calibrated output**: a tuned weight on the silence class roughly triples pitch and tab F-measure of the unchanged 2021 weights (`autotab calibrate`, `autotab evaluate`).
+- **Six datasets**: adapters for SynthTab, EGDB, GOAT, IDMT-SMT-Guitar and Guitar-TECHS alongside GuitarSet, with downloaders for the open ones.
 - **Full songs**: optional Demucs-based guitar isolation (`--isolate`, `autotab separate`, app toggle), mp3 input.
 - **One entry point**: `autotab predict|separate|evaluate|calibrate|preprocess|train` replaces the Makefile targets, the parallel script and the three Streamlit variants.
 - **Faster data loading**: the training generator caches each npz instead of re-reading it for every single frame.
@@ -185,7 +211,7 @@ Known limitations of the model itself (unchanged from 2021): it is trained on so
 
 ## Roadmap
 
-- [ ] Retrain on GuitarSet + SynthTab/EGDB with the 2026 stack and publish new weights (see docs/datasets.md)
+- [ ] Retrain on GuitarSet + SynthTab + EGDB with the 2026 stack and publish new weights
 - [ ] Onset detection so held notes are written once
 - [ ] Export to Guitar Pro / MusicXML
 - [ ] Try a transformer or CRNN backbone
