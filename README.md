@@ -1,108 +1,172 @@
-# Steps to test the installation
+# 🎸 AutoTab v2 — AI Guitar Tablature Transcription
 
-- pip install -e .
-  The above line installs autotab onto your machine
+> A CNN that listens to a guitar recording and writes out the tablature: which string, which fret, frame by frame. Trained on the GuitarSet dataset from Queen Mary University of London.
 
-- make first_npz
-  the above line makes the first npz with two annotation files already stored in the guitarset annotation folder and two audio files already stored in your guitarset audio mic folder
-  The output of this command is the npz files saved in data/spec_repr/c folder
+![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square&logo=python&logoColor=white)
+![Keras](https://img.shields.io/badge/Keras-3-d00000?style=flat-square&logo=keras&logoColor=white)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-2.21-orange?style=flat-square&logo=tensorflow&logoColor=white)
+![Dataset](https://img.shields.io/badge/Data-GuitarSet-orange?style=flat-square)
+[![CI](https://github.com/chessfromthefuture/autotabv2/actions/workflows/ci.yml/badge.svg)](https://github.com/chessfromthefuture/autotabv2/actions/workflows/ci.yml)
 
-- make run_first_model
-  The above line runs the first train of the model, only on the one file provided to you. NOTE : The Test phase of the model will fail, because you have only one file
+Built in 2021 at the Le Wagon data science bootcamp by Bruno Biehler, Hozefa Sadriwala and Ruslan Sizer. Refreshed in 2026 for Python 3.12, Keras 3 and current librosa; the original pretrained weights still load and are shipped in `models/`.
 
-# Next steps
+---
 
-- Download the entire GuitarSet from
-  https://zenodo.org/record/1422265#.YZ0JEdBBwnK
-  Make sure to select the GuitarSet_audio_and_annotation.zip 7.5GB
-  Unzip and place into the GuitarSet Folder inside data folder. A place holder has already been made for you
+## What it does
 
-- If you wish to make new npz files, at the bottom of TabDataReprGen file, provide two numbers between 0 and 359 as n(must be even) and n + 1 in place of the 0 and 1 currently provided. Then
-- make first_npz
-
-- If you wish to train on this new npz file, search from the beginning of the file name in the data/spec_repr/full_id.csv file, and copy all lines connected to that file into the data/spec_repr/id.csv file. You can then
-- make run_first_model
-
-- (In Progress/TO DO) Parallel_Tab generation for all wav files
-- (In Progress/TO DO) Train model on multiple files
-
-# Data analysis
-
-- Document here the project: autotab
-- Description: This Project focuses on creating a CNN-Model to predict guitar tabluature based on a .wave input file.
-So far the model only detects a single instrument.
-- Data Source: Data from Audio Research Lab, along the Center for Digital Music at Queen Mary University.
-GuitarSet, a dataset that provides high quality guitar recordings alongside rich annotations and metadata. https://guitarset.weebly.com/
-- Type of analysis: Training a model based on the Data and trying to predict an accurate tabluatur. 
-
-Please document the project the better you can.
-
-# Startup the project
-
-The initial setup.
-
-Create virtualenv and install the project:
-
-```bash
-sudo apt-get install virtualenv python-pip python-dev
-deactivate; virtualenv ~/venv ; source ~/venv/bin/activate ;\
-    pip install pip -U; pip install -r requirements.txt
+```
+e|----------------|----------------|----------------|
+B|----------------|---------------8|8---------------|
+G|----------------|7777------------|----------------|
+D|-32--3-7-27-33--|----------------|-----------5----|
+A|6---------------|----------------|----------------|
+E|----------------|----------------|----------------|
 ```
 
-Unittest test:
+1. The audio is normalised, resampled to 22.05 kHz and turned into a 192-bin constant-Q transform (CQT).
+2. Every frame is fed to the CNN together with its 4 neighbours on each side (a 9-frame context window).
+3. The network outputs, for each of the 6 strings, a softmax over 21 classes: *not played*, *open*, or frets 1–19.
+4. An ergonomics pass resolves the same pitch playable on several strings to the fingering closest to the previous frame.
+5. Frames are collapsed into readable tab, either every 9 frames (*simple*), on fret changes (*rhythm*), or not at all (*frames*).
+
+The architecture follows Wiggins & Kim, [*Guitar Tablature Estimation with a Convolutional Neural Network*](https://archives.ismir.net/ismir2019/paper/000033.pdf) (ISMIR 2019).
+
+---
+
+## Quick start
+
+Requires [uv](https://docs.astral.sh/uv/) (it downloads Python 3.12 for you if needed).
 
 ```bash
-make clean install test
+git clone https://github.com/chessfromthefuture/autotabv2.git
+cd autotabv2
+make install          # creates .venv and installs autotab with the app + dev extras
+make test             # 17 unit tests, including loading the pretrained weights
 ```
 
-Check for autotab in gitlab.com/{group}.
-If your project is not set please add it:
-
-- Create a new project on `gitlab.com/{group}/autotab`
-- Then populate it:
+### Transcribe a recording
 
 ```bash
-##   e.g. if group is "{group}" and project_name is "autotab"
-git remote add origin git@github.com:{group}/autotab.git
-git push -u origin master
-git push -u origin --tags
+.venv/bin/autotab predict path/to/guitar.wav                 # simple tab
+.venv/bin/autotab predict path/to/guitar.wav --mode rhythm   # keep fret changes
+.venv/bin/autotab predict a.wav b.wav -o tabs.txt            # several files, saved to disk
 ```
 
-Functionnal test with a script:
+`.wav`, `.flac` and `.ogg` work; stereo is mixed down to mono. Clean recordings of a single guitar work best: the model was trained on solo acoustic GuitarSet takes. `--silence-weight 1.0` gives the raw 2021 behaviour; the default `0.05` writes about three times as many correct notes (see below).
+
+### Web app
 
 ```bash
-cd
-mkdir tmp
-cd tmp
-autotab-run
+make app              # Streamlit UI on http://localhost:8501
 ```
 
-# Install
+Or with Docker: `docker build -t autotab . && docker run -p 8501:8501 autotab`.
 
-Go to `https://github.com/{group}/autotab` to see the project, manage issues,
-setup you ssh public key, ...
+---
 
-Create a python3 virtualenv and activate it:
+## Calibrated silence class
+
+The network sees 67 % "string not played" slots during training and learns a strong prior for silence: the raw model names a note in only 4 % of string slots, and when it does it is almost always right. Scaling the *not played* probability by a weight before the argmax trades a little precision for a lot of recall, with no retraining:
 
 ```bash
-sudo apt-get install virtualenv python-pip python-dev
-deactivate; virtualenv -ppython3 ~/venv ; source ~/venv/bin/activate
+.venv/bin/autotab calibrate            # sweep the weight on your preprocessed npz files
+.venv/bin/autotab evaluate             # raw model vs. the default weight
 ```
 
-Clone the project and install it:
+Measured on the two GuitarSet sample files (1 924 frames, player 00), full table in [`docs/calibration.csv`](docs/calibration.csv):
 
-```bash
-git clone git@github.com:{group}/autotab.git
-cd autotab
-pip install -r requirements.txt
-make clean install test                # install and test
+| silence weight | frame accuracy | pitch P / R / F | tab P / R / F |
+|---:|---:|---|---|
+| 1.0 (raw 2021 model) | 0.70 | 0.95 / 0.13 / **0.22** | 0.81 / 0.11 / **0.19** |
+| 0.1 | 0.76 | 0.76 / 0.48 / 0.59 | 0.59 / 0.43 / 0.49 |
+| **0.05 (default)** | 0.74 | 0.67 / 0.58 / **0.62** | 0.51 / 0.52 / **0.51** |
+| 0.02 | 0.65 | 0.49 / 0.66 / 0.56 | 0.38 / 0.58 / 0.46 |
+
+Caveat: these two files were most likely part of the 2021 training set, so the absolute numbers are optimistic. Re-run `autotab calibrate` on held-out players once you have the full dataset and adjust `DEFAULT_SILENCE_WEIGHT` in `autotab/evaluate.py`.
+
+---
+
+## Training on GuitarSet
+
+1. Download `GuitarSet_audio_and_annotation.zip` (7.5 GB) from [Zenodo](https://zenodo.org/record/1422265) and unpack it so you have
+
+   ```
+   data/GuitarSet/
+   ├── annotation/          360 .jams files
+   └── audio/audio_mic/     360 *_mic.wav files
+   ```
+
+2. Build the spectral representations (one `.npz` per file, ~1.7 MB each):
+
+   ```bash
+   .venv/bin/autotab preprocess --mode c -j 8
+   ```
+
+3. Train with 6-fold cross-validation (each fold holds out one of the 6 players):
+
+   ```bash
+   .venv/bin/autotab train --mode c --epochs 8 --id-file ''
+   ```
+
+   Weights, predictions and `results.csv` land in `saved/<mode>_<timestamp>/`. Pass `--id-file id.csv` to train on the exact sample list in `data/spec_repr/id.csv` instead of every npz found, and `--folds 0 1` to run only some folds.
+
+Modes: `c` CQT (default, matches the shipped weights), `m` mel spectrogram, `cm` both stacked, `s` STFT.
+
+Paths can be overridden with environment variables `AUTOTAB_DATA_DIR`, `AUTOTAB_GUITARSET`, `AUTOTAB_MODEL` and `AUTOTAB_SAVE_DIR` (see `autotab/param.py`).
+
+---
+
+## Project structure
+
+```
+autotabv2/
+├── autotab/
+│   ├── param.py            paths + constants (env-var overridable)
+│   ├── TabDataReprGen.py   wav (+ jams) -> CQT frames and one-hot labels
+│   ├── DataGenerator.py    Keras PyDataset serving context windows from npz
+│   ├── TabCNN.py           model, loss, metric, cross-validation experiment
+│   ├── Metrics.py          pitch / tab precision, recall, F-measure
+│   ├── TabErgonomics.py    picks the most playable fingering per frame
+│   ├── TabPrediction.py    model output -> ASCII tablature
+│   ├── evaluate.py         metrics, silence-class calibration
+│   ├── interpreter.py      GuitarSet .jams helpers (plots, MIDI)
+│   └── cli.py              `autotab predict | evaluate | calibrate | preprocess | train`
+├── streamlit/autotab_app.py
+├── models/full_val0_75acc_weights.h5   pretrained weights (2021, CQT mode)
+├── data/spec_repr/         id.csv sample lists; npz files are generated here
+├── notebooks/              exploration notebooks from 2021 (not maintained)
+├── tests/
+├── pyproject.toml          dependencies, `autotab` console script
+├── Makefile · Dockerfile · .github/workflows/ci.yml
 ```
 
-Functionnal test with a script:
+---
 
-```bash
-cd
-mkdir tmp
-cd tmp
-autotab-run
-```
+## What changed in the 2026 update
+
+- **Runs again**: Python 3.12, TensorFlow 2.21 / Keras 3, librosa 1.0, NumPy 2, pandas 3. The 2021 `.h5` weights load unchanged and reproduce their 77 % per-string frame accuracy on GuitarSet.
+- **No cloud coupling**: Google Cloud Storage code, credentials and the Heroku/GCP deploy scripts are gone; everything is local paths.
+- **Calibrated output**: a tuned weight on the silence class roughly triples pitch and tab F-measure of the unchanged 2021 weights (`autotab calibrate`, `autotab evaluate`).
+- **One entry point**: `autotab predict|evaluate|calibrate|preprocess|train` replaces the Makefile targets, the parallel script and the three Streamlit variants.
+- **Faster data loading**: the training generator caches each npz instead of re-reading it for every single frame.
+- **Tests and CI**: pytest suite and a GitHub Actions workflow; `uv.lock` pins the exact environment.
+- **Streamlit app** rewritten for the current API, with model caching, a note-sensitivity control, audio playback and a download button.
+
+Known limitations of the model itself (unchanged from 2021): it is trained on solo guitar only, sees just 0.2 s of context per frame, and does not detect note onsets, so long notes look like repeated frets.
+
+---
+
+## Roadmap
+
+- [ ] Retrain on the full dataset with the 2026 stack and publish new weights
+- [ ] Onset detection so held notes are written once
+- [ ] Export to Guitar Pro / MusicXML
+- [ ] Try a transformer or CRNN backbone
+
+---
+
+## References
+
+- Q. Xi, R. Bittner, J. Pauwels, X. Ye, J. P. Bello, [*GuitarSet*](https://archives.ismir.net/ismir2018/paper/000188.pdf), ISMIR 2018
+- A. Wiggins, Y. Kim, [*Guitar Tablature Estimation with a CNN*](https://archives.ismir.net/ismir2019/paper/000033.pdf), ISMIR 2019
+- Original fork: [hozefazs/autotab](https://github.com/hozefazs/autotab), earlier experiment: [autotab](https://github.com/chessfromthefuture/autotab)

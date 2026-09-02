@@ -1,10 +1,22 @@
-*.egg-info
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/
 .coverage
-.ipynb_checkpoints
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
 .DS_Store
-raw_data/
-**/__pycache__/
-*.saved
+
+# data & training artefacts (GuitarSet is 7.5 GB; download it, don't commit it)
+data/GuitarSet/
+data/spec_repr/*/
+*.npz
 *.wav
 *.jams
-*.npz
+saved/
+raw_data/
+.claude/

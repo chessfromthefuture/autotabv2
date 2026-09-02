@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotab"
+version = "2.0.0"
+description = "CNN that transcribes guitar audio (.wav) into guitar tablature, trained on GuitarSet"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "scipy>=1.14",
+    "librosa>=0.11",
+    "soundfile>=0.13",
+    "jams>=0.3.4",
+    "tensorflow>=2.18",
+    "keras>=3.6",
+]
+
+[project.optional-dependencies]
+app = ["streamlit>=1.40", "pillow"]
+viz = ["matplotlib", "pretty_midi"]
+dev = ["pytest>=8", "ruff"]
+
+[project.scripts]
+autotab = "autotab.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autotab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF012"]

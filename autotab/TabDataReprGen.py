@@ -1,262 +1,203 @@
+"""Audio front-end: turn a .wav (plus optional .jams annotation) into the
+spectral representation and frame-level labels the CNN consumes."""
+
+from __future__ import annotations
+
 import os
-import numpy as np
-import jams
-from scipy.io import wavfile
-import sys
+from pathlib import Path
+
 import librosa
-from tensorflow.keras.utils import to_categorical
+import numpy as np
+import soundfile as sf
+from keras.utils import to_categorical
+
+from autotab.param import (
+    CON_WIN_SIZE,
+    CQT_BINS_PER_OCTAVE,
+    CQT_N_BINS,
+    GUITARSET_DIR,
+    HIGHEST_FRET,
+    HOP_LENGTH,
+    N_FFT,
+    NUM_CLASSES,
+    SAMPLE_RATE,
+    SPEC_REPR_DIR,
+    STRING_MIDI_PITCHES,
+)
+
+
+def read_audio_mono(source) -> tuple[np.ndarray, int]:
+    """Read a wav/flac/ogg file (path or file-like) as float32 mono."""
+    data, sr = sf.read(source, dtype="float32", always_2d=True)
+    return data.mean(axis=1), sr
 
 
 class TabDataReprGen:
-    def __init__(self, mode="c"):
-        # file path to the GuitarSet dataset
-        path = "data/GuitarSet/"
-        self.path_audio = path + "audio/audio_mic/"
-        self.path_anno = path + "annotation/"
+    """Preprocessing modes: c = CQT, m = mel spectrogram, cm = both stacked,
+    s = STFT magnitude. The shipped weights were trained with "c"."""
 
-        # labeling parameters
-        self.string_midi_pitches = [40, 45, 50, 55, 59, 64]
-        self.highest_fret = 19
-        self.num_classes = self.highest_fret + 2  # for open/closed
+    def __init__(self, mode: str = "c", guitarset_dir: os.PathLike | str | None = None):
+        self.guitarset_dir = Path(guitarset_dir) if guitarset_dir else GUITARSET_DIR
+        self.path_audio = self.guitarset_dir / "audio" / "audio_mic"
+        self.path_anno = self.guitarset_dir / "annotation"
 
-        # prepresentation and its labels storage
-        self.output = {}
+        self.string_midi_pitches = STRING_MIDI_PITCHES
+        self.highest_fret = HIGHEST_FRET
+        self.num_classes = NUM_CLASSES
 
-        # preprocessing modes
-        #
-        # c = cqt
-        # m = melspec
-        # cm = cqt + melspec
-        # s = stft
-        #
-        self.preproc_mode = mode    # Preprocessing mode for the wav file data
-        self.downsample = True      # Select to lower sample rate of data
-        self.normalize = True       # Select to normalize data
-        self.sr_downs = 22050       # Lowered sample rate
+        self.output: dict[str, np.ndarray] = {}
 
-        # CQT parameters
-        self.cqt_n_bins = 192           # Number of bins for the constant-Q transform "c"
-        self.cqt_bins_per_octave = 24   # Number of bins per octave
+        if mode not in ("c", "m", "cm", "s"):
+            raise ValueError(f"invalid representation mode {mode!r}; use c, m, cm or s")
+        self.preproc_mode = mode
+        self.downsample = True
+        self.normalize = True
+        self.sr_downs = SAMPLE_RATE
 
-        # STFT parameters
-        self.n_fft = 2048       # Length of the FFT window
-        self.hop_length = 512   # Number of samples between successive frames
+        self.cqt_n_bins = CQT_N_BINS
+        self.cqt_bins_per_octave = CQT_BINS_PER_OCTAVE
+        self.n_fft = N_FFT
+        self.hop_length = HOP_LENGTH
 
-        # save file path
-        self.save_path = "data/spec_repr/" + self.preproc_mode + "/"
+        self.con_win_size = CON_WIN_SIZE
+        self.half_win = self.con_win_size // 2
 
-    def load_rep_and_labels_from_raw_file(self, filename):
-        """
-        Loads wav and jams files, reads wav file and creates sample rate [int]
-        and data [np.array].
-        Constructs, cleans, and categorizes labels and stores them in output dict
-        Returns the number of frames
-        """
-        file_audio = self.path_audio + filename + "_mic.wav"    # wav file
-        file_anno = self.path_anno + filename + ".jams"         # jams file
-        jam = jams.load(file_anno)                              # loads jams file
-        self.sr_original, data = wavfile.read(file_audio)       # creates sample rate [int] and data from wav file
+        self.save_path = SPEC_REPR_DIR / self.preproc_mode
+
+        self.sr_original: int | None = None
+        self.sr_curr: int | None = None
+
+    # ------------------------------------------------------------------ labels
+    def load_rep_and_labels_from_raw_file(self, filename: str) -> int:
+        """Load <filename>_mic.wav and <filename>.jams, compute the spectral
+        representation and one-hot labels into self.output. Returns #frames."""
+        import jams  # heavy import; only needed for training data
+
+        file_audio = self.path_audio / f"{filename}_mic.wav"
+        file_anno = self.path_anno / f"{filename}.jams"
+        jam = jams.load(str(file_anno))
+        data, self.sr_original = read_audio_mono(file_audio)
         self.sr_curr = self.sr_original
 
-        # preprocess audio, store in output dict
         self.output["repr"] = np.swapaxes(self.preprocess_audio(data), 0, 1)
-        print(self.output['repr'].shape)
 
-        # construct labels
-        frame_indices = range(len(self.output["repr"]))  # Counts the frames
-        times = librosa.frames_to_time( # Converts frame counts to time (seconds)
-            frame_indices,
-            sr=self.sr_curr,            # Sample rate
-            hop_length=self.hop_length  # Number of samples between successive frames
-            )
+        frame_indices = range(len(self.output["repr"]))
+        times = librosa.frames_to_time(frame_indices, sr=self.sr_curr, hop_length=self.hop_length)
 
-        # loop over all strings and sample annotations
         labels = []
         for string_num in range(6):
             anno = jam.annotations["note_midi"][string_num]
             string_label_samples = anno.to_samples(times)
-            # replace midi pitch values with fret numbers
-            for i in frame_indices:
-                if string_label_samples[i] == []:
-                    string_label_samples[i] = -1
+            frets = []
+            for sample in string_label_samples:
+                if len(sample) == 0:
+                    frets.append(-1)
                 else:
-                    string_label_samples[i] = int(
-                        round(string_label_samples[i][0]) -
-                        self.string_midi_pitches[string_num])
-            labels.append([string_label_samples])
+                    frets.append(int(round(sample[0]) - self.string_midi_pitches[string_num]))
+            labels.append(frets)
 
-        labels = np.array(labels)       # Creates np.array out of labels list
-        # remove the extra dimension
-        labels = np.squeeze(labels)
-        labels = np.swapaxes(labels, 0, 1)
-
-        # clean labels
-        labels = self.clean_labels(labels) # Returns an array of the labels with
-        # the correct string numbering and categorized according to the number of classes defined
-
-        # store and return
-        self.output["labels"] = labels # Stores the cleaned labels in output dict
+        labels = np.swapaxes(np.array(labels), 0, 1)  # (frames, 6)
+        self.output["labels"] = self.clean_labels(labels)
         return len(labels)
 
-    def correct_numbering(self, n):
-        """
-        Adds +1 to correct the string number
-        """
+    def correct_numbering(self, n: int) -> int:
+        """Shift frets by one so 0 = not played, 1 = open, 2 = fret 1, ..."""
         n += 1
         if n < 0 or n > self.highest_fret:
             n = 0
         return n
 
     def categorical(self, label):
-        """
-        Categorizes the label in the number of classes defined
-        (highest_fret (19) + 2  # for open/closed)
-        """
         return to_categorical(label, self.num_classes)
 
     def clean_label(self, label):
-        """
-        Takes the label, corrects the string numbering and categorizes the label
-        using to_categorical.
-        Returns categorized and clean label
-        """
-        label = [self.correct_numbering(n) for n in label]
-        return self.categorical(label)
+        return self.categorical([self.correct_numbering(n) for n in label])
 
     def clean_labels(self, labels):
-        """
-        Returns an array of all the cleaned labels with the correct string numbering
-        and categorized according to the number of classes defined
-        """
         return np.array([self.clean_label(label) for label in labels])
 
-    def preprocess_audio(self, data):
-        """
-        Preprocesses data depending on mode selected using librosa.
-        It converts data to float, then it normalizes it and resamples it
-        to a lower sample rate. Then, preprocesses it and returns the processed data
-            Args:
-                data ([np.array]): [data created by wavfile.read]
-            Returns:
-                [np.ndarrray[shape=(n_bins, t)]]: [preprocessed data array]
-        """
-        data = data.astype(float)
+    # ------------------------------------------------------------------- audio
+    def preprocess_audio(self, data: np.ndarray) -> np.ndarray:
+        """Normalise, resample and transform. Returns (n_bins, n_frames)."""
+        data = np.asarray(data, dtype=np.float32)
+        if data.ndim > 1:
+            data = data.mean(axis=-1)
         if self.normalize:
             data = librosa.util.normalize(data)
-        if self.downsample:
-            data = librosa.resample(data, self.sr_original, self.sr_downs)
+        if self.downsample and self.sr_original != self.sr_downs:
+            data = librosa.resample(data, orig_sr=self.sr_original, target_sr=self.sr_downs)
             self.sr_curr = self.sr_downs
+
         if self.preproc_mode == "c":
-            data = np.abs(
-                librosa.cqt(data,     # Computes the constant-Q transform of an audio signal
-                            hop_length=self.hop_length,
-                            sr=self.sr_curr,        # data sample rate
-                            n_bins=self.cqt_n_bins,
-                            bins_per_octave=self.cqt_bins_per_octave))
-        elif self.preproc_mode == "m":
-            data = librosa.feature.melspectrogram(y=data,
-                                                  sr=self.sr_curr,
-                                                  n_fft=self.n_fft,
-                                                  hop_length=self.hop_length)
-        elif self.preproc_mode == "cm":
-            cqt = np.abs(
-                librosa.cqt(data,
-                            hop_length=self.hop_length,
-                            sr=self.sr_curr,
-                            n_bins=self.cqt_n_bins,
-                            bins_per_octave=self.cqt_bins_per_octave))
-            mel = librosa.feature.melspectrogram(y=data,
-                                                 sr=self.sr_curr,
-                                                 n_fft=self.n_fft,
-                                                 hop_length=self.hop_length)
-            data = np.concatenate((cqt, mel), axis=0)
-        elif self.preproc_mode == "s":
-            data = np.abs(
-                librosa.stft(data,
-                             n_fft=self.n_fft,
-                             hop_length=self.hop_length))
-        else:
-            print("invalid representation mode.")
+            return self._cqt(data)
+        if self.preproc_mode == "m":
+            return self._mel(data)
+        if self.preproc_mode == "cm":
+            return np.concatenate((self._cqt(data), self._mel(data)), axis=0)
+        return np.abs(librosa.stft(data, n_fft=self.n_fft, hop_length=self.hop_length))
 
-        return data
+    def _cqt(self, data):
+        return np.abs(
+            librosa.cqt(
+                data,
+                sr=self.sr_curr,
+                hop_length=self.hop_length,
+                n_bins=self.cqt_n_bins,
+                bins_per_octave=self.cqt_bins_per_octave,
+            )
+        )
 
+    def _mel(self, data):
+        return librosa.feature.melspectrogram(
+            y=data, sr=self.sr_curr, n_fft=self.n_fft, hop_length=self.hop_length
+        )
+
+    # --------------------------------------------------------------- npz files
     def save_data(self, filename):
-        """
-        Saves the generated data output dictionary into an npz file
-        """
         np.savez(filename, **self.output)
 
-    def get_nth_filename(self, n):
-        """
-        Sorts the jams files in the directory, looks for the nth one,
-        removes the .jams extension and returns only the filename
-            Returns:
-                [str]: [filename]
-        """
-        filenames = np.sort(np.array(os.listdir(self.path_anno)))
-        filenames = list(filter(lambda x: x[-5:] == ".jams", filenames))
-        print(filenames[n])
-        return filenames[n][:-5]
+    def list_filenames(self) -> list[str]:
+        names = sorted(p.stem for p in self.path_anno.glob("*.jams"))
+        if not names:
+            raise FileNotFoundError(f"no .jams files found in {self.path_anno}")
+        return names
 
-    def load_and_save_repr_nth_file(self, n):
-        """
-        Gets the filename, preprocesses it, and gets the number of frames.
-        Saves the file as an npz
-        """
+    def get_nth_filename(self, n: int) -> str:
+        return self.list_filenames()[n]
 
-        filename = self.get_nth_filename(n)     # Gets only filename with no .jams extension
-        print(filename)
+    def load_and_save_repr_file(self, filename: str) -> Path:
         num_frames = self.load_rep_and_labels_from_raw_file(filename)
-        print("done: " + filename + ", " + str(num_frames) + " frames")
-        save_path = self.save_path
-        if not os.path.exists(save_path):               # Creates saving path if it does not exist
-            os.makedirs(save_path)
-        self.save_data(save_path + filename + ".npz")   # Saves generated output dictionary in an npz file
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        out = self.save_path / f"{filename}.npz"
+        self.save_data(out)
+        print(f"done: {filename}, {num_frames} frames -> {out}")
+        return out
 
-    def load_rep_from_raw_file(self, filename):
-        """Function to generate x_new data from a wave file
-            to feed into the prediction model
-                Args:
-                filename (string): location of the file to be pre-processed
-                Returns:
-                [numpy.ndArray]: a numpy array of shape
-                num frames x 192 x 9 (con_win) x 1
-            """
-        self.con_win_size = 9
-        self.half_win = self.con_win_size // 2
-        file_audio = filename
-        self.sr_original, data = wavfile.read(file_audio)
+    def load_and_save_repr_nth_file(self, n: int) -> Path:
+        return self.load_and_save_repr_file(self.get_nth_filename(n))
+
+    # -------------------------------------------------------------- inference
+    def load_rep_from_raw_file(self, source) -> np.ndarray:
+        """Turn a wav (path or file-like object) into model input of shape
+        (n_frames, n_bins, con_win_size, 1)."""
+        data, self.sr_original = read_audio_mono(source)
         self.sr_curr = self.sr_original
-        # preprocess audio, store in output dict
-        repr = np.swapaxes(self.preprocess_audio(data), 0, 1)
-        full_x = np.pad(
-            repr,
-            [
-                (self.half_win, self.half_win
-                 ),  # full x is the entire song padded with halfwin*2 frames
-                (0, 0)
-            ],
-            mode='constant')
-        x_new = []
-        for frame_idx in range(0,
-                               len(repr)):  # for all frames in the experiment
-            sample_x = full_x[frame_idx:frame_idx + self.con_win_size]
-            x_new.append(np.expand_dims(np.swapaxes(sample_x, 0, 1), -1))
-        x_new = np.array(x_new, dtype='float32')
-        return x_new
+        repr_ = np.swapaxes(self.preprocess_audio(data), 0, 1)  # (frames, bins)
+        return self.windows_from_repr(repr_)
+
+    def windows_from_repr(self, repr_: np.ndarray) -> np.ndarray:
+        full_x = np.pad(repr_, [(self.half_win, self.half_win), (0, 0)], mode="constant")
+        # sliding windows: (frames, con_win, bins) -> (frames, bins, con_win, 1)
+        idx = np.arange(len(repr_))[:, None] + np.arange(self.con_win_size)[None, :]
+        windows = full_x[idx]
+        return np.expand_dims(np.swapaxes(windows, 1, 2), -1).astype("float32")
+
 
 def main(args):
-    """
-    Gets the index of the file (m) and the preprocessing mode (n)
-    Does the processing and saves it as an npz
-    """
-    n = args[0]
-    m = args[1]
-    gen = TabDataReprGen(mode=m)
-    gen.load_and_save_repr_nth_file(n)
+    """(index, mode) -> preprocess the index-th GuitarSet file into an npz."""
+    n, m = args
+    TabDataReprGen(mode=m).load_and_save_repr_nth_file(n)
 
 
 if __name__ == "__main__":
-    #for index in range(361):
-    #    main([index, 'c'])
-    main([0,"c"])
+    main([0, "c"])

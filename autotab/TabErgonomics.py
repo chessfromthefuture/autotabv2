@@ -1,5 +1,6 @@
-import numpy as np
 import itertools
+
+import numpy as np
 
 pitch_matrix = [
     [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57],
@@ -7,12 +8,12 @@ pitch_matrix = [
     [50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67],
     [55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72],
     [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76],
-    [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81]
+    [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81],
 ]
 
 
 def string_distance(curr, prev):
-    if curr == prev:  #if no string changed
+    if curr == prev:  # if no string changed
         return 0  # zero distance
     if curr == -1 or curr == 0 or prev == -1 or prev == 0:
         # this means that a string is moving from/to a non-played or non-fretted position
@@ -24,22 +25,22 @@ def frame_distance(curr, prev):
     frame_changes = list(map(string_distance, curr, prev))
     total_change = np.sum(frame_changes)
     # adding the fret variance as well to the distance to penalize frames with frets too far apart
-    #total_change = total_change + fret_variance(curr)
+    # total_change = total_change + fret_variance(curr)
     return total_change
 
 
 def fret_variance(frame):
     frame_np = np.array(frame)
-    #consider only those string which are actually fretted
+    # consider only those string which are actually fretted
     frame_frets = frame_np[frame_np > 0]
-    if len(frame_frets) > 0:  #if there are fretted strings
+    if len(frame_frets) > 0:  # if there are fretted strings
         return np.var(frame_frets)  # return variance
-    return 0  #else return no variance
+    return 0  # else return no variance
 
 
 def frame_to_midi(frame):
     midi = []
-    for i in range(0, len(frame)):  # for each string
+    for i in range(len(frame)):  # for each string
         if frame[i] == -1:
             midi.append(-1)
         else:
@@ -57,7 +58,7 @@ def combination_to_frames(combinations):
 
 
 def get_all_combinations(frame):
-    #convert frame to midi notes
+    # convert frame to midi notes
     midi = frame_to_midi(frame)
     midi_notes = []
     for note in np.unique(midi):
@@ -74,8 +75,7 @@ def best_frame(curr, prev):
     options = get_all_combinations(curr)
     prev_frames = np.tile(prev, (len(options), 1))
     distance_matrix = np.array(list(map(frame_distance, options, prev_frames)))
-    best_options_idx = list(
-        np.where(distance_matrix == distance_matrix.min())[0])
+    best_options_idx = list(np.where(distance_matrix == distance_matrix.min())[0])
     best_options = []
     for idx in best_options_idx:
         best_options.append(options[idx])

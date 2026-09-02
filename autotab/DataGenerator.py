@@ -1,104 +1,74 @@
+"""Keras dataset that serves context windows of spectral frames from npz files."""
+
+from __future__ import annotations
+
 import numpy as np
-import tensorflow.keras as keras
-from google.cloud import storage
-import os
-from io import BytesIO  # for google cloud npz loading
-from tensorflow.python.lib.io import file_io
+from keras.utils import PyDataset
 
-from autotab.param import GCP  # for google cloud npz loading
-
-is_gcp = GCP  # environment variable for whether google cloud is to beused
+from autotab.param import CON_WIN_SIZE, INPUT_BINS, NUM_CLASSES, NUM_STRINGS
 
 
-class DataGenerator(keras.utils.Sequence):
+class DataGenerator(PyDataset):
+    """Each ID looks like ``<file>_<frame_idx>`` and maps to one training
+    sample: a window of ``con_win_size`` frames centred on ``frame_idx``."""
+
     def __init__(
-            self,
-            list_IDs,
-            data_path="",
-            #data_path=f"gs://{BUCKET_NAME}/{DATA_BUCKET_FOLDER}/",
-            batch_size=128,
-            shuffle=True,
-            label_dim=(6, 21),
-            spec_repr="c",
-            con_win_size=9):
-
-        self.list_IDs = list_IDs
-        self.data_path = data_path
+        self,
+        list_IDs,
+        data_path="",
+        batch_size=128,
+        shuffle=True,
+        label_dim=(NUM_STRINGS, NUM_CLASSES),
+        spec_repr="c",
+        con_win_size=CON_WIN_SIZE,
+        seed=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.list_IDs = list(list_IDs)
+        self.data_path = str(data_path)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.label_dim = label_dim
         self.spec_repr = spec_repr
         self.con_win_size = con_win_size
         self.halfwin = con_win_size // 2
+        self.rng = np.random.default_rng(seed)
 
-        if self.spec_repr == "c":
-            self.X_dim = (self.batch_size, 192, self.con_win_size, 1)
-        elif self.spec_repr == "m":
-            self.X_dim = (self.batch_size, 128, self.con_win_size, 1)
-        elif self.spec_repr == "cm":
-            self.X_dim = (self.batch_size, 320, self.con_win_size, 1)
-        elif self.spec_repr == "s":
-            self.X_dim = (self.batch_size, 1025, self.con_win_size, 1)
+        self.X_dim = (self.batch_size, INPUT_BINS[spec_repr], self.con_win_size, 1)
+        self.y_dim = (self.batch_size, *self.label_dim)
 
-        self.y_dim = (self.batch_size, self.label_dim[0], self.label_dim[1])
-
+        self._cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.on_epoch_end()
 
     def __len__(self):
-        # number of batches per epoch
-        return int(np.floor(float(len(self.list_IDs)) / self.batch_size))
+        return int(np.floor(len(self.list_IDs) / self.batch_size))
 
     def __getitem__(self, index):
-        # generate indices of the batch
-        indexes = self.indexes[index * self.batch_size:(index + 1) *
-                               self.batch_size]
-
-        # find list of IDs
-        list_IDs_temp = [self.list_IDs[k] for k in indexes]
-
-        # generate data
-        X, y = self.__data_generation(list_IDs_temp)
-
-        return X, y
+        indexes = self.indexes[index * self.batch_size : (index + 1) * self.batch_size]
+        return self._data_generation([self.list_IDs[k] for k in indexes])
 
     def on_epoch_end(self):
-        # Updates indexes after each epoch
         self.indexes = np.arange(len(self.list_IDs))
-        if self.shuffle == True:
-            np.random.shuffle(self.indexes)
+        if self.shuffle:
+            self.rng.shuffle(self.indexes)
 
-    def __data_generation(self, list_IDs_temp):
-        #Generates data containing batch_size samples
-        # X : (n_samples, *dim, n_channels)
+    def _load(self, filename: str) -> tuple[np.ndarray, np.ndarray]:
+        """Load (and cache) the padded representation + labels of one file."""
+        if filename not in self._cache:
+            loaded = np.load(f"{self.data_path}{self.spec_repr}/{filename}")
+            full_x = np.pad(loaded["repr"], [(self.halfwin, self.halfwin), (0, 0)], mode="constant")
+            self._cache[filename] = (full_x, loaded["labels"])
+        return self._cache[filename]
 
-        # Initialization
-        X = np.empty(self.X_dim)
-        y = np.empty(self.y_dim)
-
-        # Generate data
+    def _data_generation(self, list_IDs_temp):
+        X = np.empty(self.X_dim, dtype="float32")
+        y = np.empty(self.y_dim, dtype="float32")
         for i, ID in enumerate(list_IDs_temp):
-
-            # determine filename
-            data_dir = self.data_path + self.spec_repr + "/"
             filename = "_".join(ID.split("_")[:-1]) + ".npz"
             frame_idx = int(ID.split("_")[-1])
-
-            if not is_gcp:
-                # load a context window centered around the frame index
-                loaded = np.load(data_dir + filename)
-            else:  # code to load an npz file from google cloud
-                f = BytesIO(
-                    file_io.read_file_to_string(data_dir + filename,
-                                                binary_mode=True))
-                loaded = np.load(f)
-
-            full_x = np.pad(loaded["repr"], [(self.halfwin, self.halfwin),
-                                             (0, 0)],
-                            mode='constant')
-            sample_x = full_x[frame_idx:frame_idx + self.con_win_size]
-            X[i, ] = np.expand_dims(np.swapaxes(sample_x, 0, 1), -1)
-
-            # Store label
-            y[i, ] = loaded["labels"][frame_idx]
-
+            full_x, labels = self._load(filename)
+            sample_x = full_x[frame_idx : frame_idx + self.con_win_size]
+            X[i] = np.expand_dims(np.swapaxes(sample_x, 0, 1), -1)
+            y[i] = labels[frame_idx]
         return X, y
