@@ -99,6 +99,7 @@ if uploaded_file is not None:
     st.download_button("Download tab (.txt)", tab, file_name=f"{uploaded_file.name}.tab.txt")
 else:
     st.info(
-        "Upload a mono or stereo guitar recording to get started. The model was trained on "
-        "solo acoustic guitar (GuitarSet), so clean single-guitar recordings work best."
+        "Upload a guitar recording to get started. The model was trained on solo acoustic "
+        "guitar (GuitarSet), so clean single-guitar recordings work best. For a full song, "
+        "switch on guitar isolation."
     )
