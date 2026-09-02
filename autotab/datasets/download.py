@@ -88,7 +88,7 @@ def _unzip(zip_path: Path, dest: Path, strip_top: bool, progress=print):
 
 
 def download(
-    name: str, root: Path, parts=None, amps=None, keep_zip=False, workers=4, progress=print
+    name: str, root: Path, parts=None, amps=None, keep_zip=False, workers=2, progress=print
 ) -> Path:
     root = Path(root)
     if name in MANUAL:
@@ -109,18 +109,22 @@ def download(
     raise KeyError(f"no downloader for {name!r}")
 
 
-def download_egdb(root: Path, amps=None, workers=4, progress=print) -> Path:
+def download_egdb(root: Path, amps=None, workers=2, progress=print, retries=4) -> Path:
     """Fetch labels plus the requested amp folders (default: DI only, ~0.5 GB).
-    Google Drive serves each file slowly, so a few parallel workers help a lot."""
-    from concurrent.futures import ThreadPoolExecutor
 
-    root = Path(root)
+    Google Drive throttles bursts of requests ("have had many accesses"), so
+    each file is retried with exponential back-off and failures are collected
+    instead of aborting the run. Re-running the command resumes: files that
+    already exist are skipped."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
 
     try:
         import gdown
     except ImportError as exc:
         raise ImportError('EGDB download needs gdown: uv pip install -e ".[data]"') from exc
 
+    root = Path(root)
     wanted = ["audio_label", *(f"audio_{a}" for a in (amps or ["DI"]))]  # labels first
     progress(f"listing {EGDB_FOLDER}")
     files = gdown.download_folder(EGDB_FOLDER, skip_download=True, quiet=True)
@@ -129,15 +133,42 @@ def download_egdb(root: Path, amps=None, workers=4, progress=print) -> Path:
     have = sum((root / str(f.path)).exists() for f in todo)
     progress(f"{len(todo)} files ({have} already present) -> {root}; about 2 MB each")
     missing = [f for f in todo if not (root / str(f.path)).exists()]
+    failed = []
 
     def fetch(f):
         target = root / str(f.path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        gdown.download(id=f.id, output=str(target), quiet=True)
-        return str(f.path)
+        for attempt in range(retries):
+            try:
+                gdown.download(id=f.id, output=str(target), quiet=True)
+                return str(f.path), None
+            except Exception as exc:  # throttling, connection resets
+                if target.exists():
+                    target.unlink()
+                if attempt + 1 < retries:
+                    time.sleep(5 * 2**attempt)
+                else:
+                    return str(f.path), exc
 
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for i, path in enumerate(pool.map(fetch, missing), 1):
-            progress(f"  [{have + i}/{len(todo)}] {path}")
-    progress(f"done. Next: autotab preprocess --dataset egdb --root {root} -j 8")
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            for i, (path, error) in enumerate(pool.map(fetch, missing), 1):
+                if error is None:
+                    progress(f"  [{have + i}/{len(todo)}] {path}")
+                else:
+                    failed.append(path)
+                    progress(f"  [{have + i}/{len(todo)}] {path}  FAILED ({type(error).__name__})")
+    except KeyboardInterrupt:
+        progress("interrupted; run the same command again to resume")
+        raise SystemExit(130) from None
+
+    if failed:
+        progress(
+            f"\n{len(failed)} file(s) could not be fetched (Google Drive throttling). Wait a few "
+            "minutes and run the same command again; it resumes where it stopped. If it keeps "
+            f"failing, open {EGDB_FOLDER} in a browser, download the audio_label and audio_<amp> "
+            f"folders and unzip them into {root}."
+        )
+    else:
+        progress(f"done. Next: autotab preprocess --dataset egdb --root {root} -j 8")
     return root

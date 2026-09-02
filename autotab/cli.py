@@ -245,7 +245,7 @@ def build_parser():
     dl.add_argument("--parts", nargs="*", help="guitar-techs: zip names to fetch, e.g. P3_music")
     dl.add_argument("--amps", nargs="*", help="egdb: amp folders (default DI)")
     dl.add_argument("--keep-zip", action="store_true")
-    dl.add_argument("-w", "--workers", type=int, default=4, help="parallel downloads (egdb)")
+    dl.add_argument("-w", "--workers", type=int, default=2, help="parallel downloads (egdb)")
     dl.set_defaults(func=cmd_download)
 
     tr = sub.add_parser("train", help="6-fold cross-validation training")
