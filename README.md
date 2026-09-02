@@ -41,7 +41,7 @@ Requires [uv](https://docs.astral.sh/uv/) (it downloads Python 3.12 for you if n
 git clone https://github.com/chessfromthefuture/autotabv2.git
 cd autotabv2
 make install          # creates .venv and installs autotab with the app + dev extras
-make test             # 17 unit tests, including loading the pretrained weights
+make test             # 18 unit tests, including loading the pretrained weights
 ```
 
 ### Transcribe a recording
@@ -52,7 +52,17 @@ make test             # 17 unit tests, including loading the pretrained weights
 .venv/bin/autotab predict a.wav b.wav -o tabs.txt            # several files, saved to disk
 ```
 
-`.wav`, `.flac` and `.ogg` work; stereo is mixed down to mono. Clean recordings of a single guitar work best: the model was trained on solo acoustic GuitarSet takes. `--silence-weight 1.0` gives the raw 2021 behaviour; the default `0.05` writes about three times as many correct notes (see below).
+`.wav`, `.flac`, `.ogg` and `.mp3` work; stereo is mixed down to mono. Clean recordings of a single guitar work best: the model was trained on solo acoustic GuitarSet takes. `--silence-weight 1.0` gives the raw 2021 behaviour; the default `0.05` writes about three times as many correct notes (see below).
+
+### Full songs: isolate the guitar first
+
+```bash
+uv pip install -e ".[separate]"                                  # Demucs + PyTorch, once
+.venv/bin/autotab predict song.mp3 --isolate --mode rhythm       # transcribe only the guitar
+.venv/bin/autotab separate song.mp3 --stems guitar other vocals  # or just export the stems
+```
+
+`--isolate` runs Meta's [Demucs](https://github.com/facebookresearch/demucs) 6-stem model (`htdemucs_6s`) to strip vocals, drums, bass and keys before transcription. On an Apple Silicon Mac it uses the GPU and takes roughly a minute for a 4-minute song. See the benchmark below.
 
 ### Web app
 
@@ -83,6 +93,20 @@ Measured on the two GuitarSet sample files (1 924 frames, player 00), full table
 | 0.02 | 0.65 | 0.49 / 0.66 / 0.56 | 0.38 / 0.58 / 0.46 |
 
 Caveat: these two files were most likely part of the 2021 training set, so the absolute numbers are optimistic. Re-run `autotab calibrate` on held-out players once you have the full dataset and adjust `DEFAULT_SILENCE_WEIGHT` in `autotab/evaluate.py`.
+
+---
+
+## Guitar isolation benchmark
+
+To measure what isolation buys, a GuitarSet sample (with ground truth) was mixed at equal peak level with real drums, bass and vocals separated from a pop song, then transcribed three ways. Numbers are pitch F-measure with the default silence weight, full table in [`docs/isolation_benchmark.csv`](docs/isolation_benchmark.csv):
+
+| input | comp excerpt | solo excerpt |
+|---|---:|---:|
+| clean guitar recording | 0.64 | 0.59 |
+| guitar + drums, bass, vocals | 0.35 | 0.26 |
+| same mix, Demucs-isolated guitar (`--isolate`) | **0.59** | **0.58** |
+
+The model itself was never trained on electric or mixed music, so for real songs the next lever is more diverse training data. See [`docs/datasets.md`](docs/datasets.md) for a survey of seven guitar datasets (SynthTab, EGDB, GOAT, GAPS, Guitar-TECHS, …) and a recommended order to add them.
 
 ---
 
@@ -129,10 +153,12 @@ autotabv2/
 │   ├── TabErgonomics.py    picks the most playable fingering per frame
 │   ├── TabPrediction.py    model output -> ASCII tablature
 │   ├── evaluate.py         metrics, silence-class calibration
+│   ├── separate.py         Demucs guitar isolation for full songs
 │   ├── interpreter.py      GuitarSet .jams helpers (plots, MIDI)
-│   └── cli.py              `autotab predict | evaluate | calibrate | preprocess | train`
+│   └── cli.py              `autotab predict | separate | evaluate | calibrate | preprocess | train`
 ├── streamlit/autotab_app.py
 ├── models/full_val0_75acc_weights.h5   pretrained weights (2021, CQT mode)
+├── docs/                   dataset survey, calibration and isolation benchmarks
 ├── data/spec_repr/         id.csv sample lists; npz files are generated here
 ├── notebooks/              exploration notebooks from 2021 (not maintained)
 ├── tests/
@@ -147,7 +173,8 @@ autotabv2/
 - **Runs again**: Python 3.12, TensorFlow 2.21 / Keras 3, librosa 1.0, NumPy 2, pandas 3. The 2021 `.h5` weights load unchanged and reproduce their 77 % per-string frame accuracy on GuitarSet.
 - **No cloud coupling**: Google Cloud Storage code, credentials and the Heroku/GCP deploy scripts are gone; everything is local paths.
 - **Calibrated output**: a tuned weight on the silence class roughly triples pitch and tab F-measure of the unchanged 2021 weights (`autotab calibrate`, `autotab evaluate`).
-- **One entry point**: `autotab predict|evaluate|calibrate|preprocess|train` replaces the Makefile targets, the parallel script and the three Streamlit variants.
+- **Full songs**: optional Demucs-based guitar isolation (`--isolate`, `autotab separate`, app toggle), mp3 input.
+- **One entry point**: `autotab predict|separate|evaluate|calibrate|preprocess|train` replaces the Makefile targets, the parallel script and the three Streamlit variants.
 - **Faster data loading**: the training generator caches each npz instead of re-reading it for every single frame.
 - **Tests and CI**: pytest suite and a GitHub Actions workflow; `uv.lock` pins the exact environment.
 - **Streamlit app** rewritten for the current API, with model caching, a note-sensitivity control, audio playback and a download button.
@@ -158,7 +185,7 @@ Known limitations of the model itself (unchanged from 2021): it is trained on so
 
 ## Roadmap
 
-- [ ] Retrain on the full dataset with the 2026 stack and publish new weights
+- [ ] Retrain on GuitarSet + SynthTab/EGDB with the 2026 stack and publish new weights (see docs/datasets.md)
 - [ ] Onset detection so held notes are written once
 - [ ] Export to Guitar Pro / MusicXML
 - [ ] Try a transformer or CRNN backbone

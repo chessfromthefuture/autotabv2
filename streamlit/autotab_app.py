@@ -32,7 +32,9 @@ def get_model():
 
 
 @st.cache_data(show_spinner="Transcribing…")
-def transcribe(file_bytes: bytes, mode: str, bars: int, bar_len: int, silence_weight: float) -> str:
+def transcribe(
+    file_bytes: bytes, mode: str, bars: int, bar_len: int, silence_weight: float, isolate: bool
+) -> str:
     import io
 
     return tp.predict_tab(
@@ -42,10 +44,35 @@ def transcribe(file_bytes: bytes, mode: str, bars: int, bar_len: int, silence_we
         num_div=bars,
         len_div=bar_len,
         silence_weight=silence_weight,
+        isolate=isolate,
     )
 
 
-uploaded_file = st.file_uploader("Choose a guitar recording", type=["wav", "flac", "ogg"])
+def separation_available() -> bool:
+    try:
+        import demucs.api  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+uploaded_file = st.file_uploader(
+    "Choose a guitar recording or a full song", type=["wav", "flac", "ogg", "mp3"]
+)
+
+if separation_available():
+    isolate = st.toggle(
+        "Isolate the guitar first (full songs with vocals, drums, bass…)",
+        value=False,
+        help="Runs Demucs htdemucs_6s and transcribes only the guitar stem. Takes about "
+        "a minute for a 4-minute song on Apple Silicon.",
+    )
+else:
+    isolate = False
+    st.caption(
+        'Install the `separate` extra to transcribe full songs: `uv pip install -e ".[separate]"`'
+    )
 
 MODES = {"Ergonomic Simple": "simple", "Ergonomic Rhythm": "rhythm", "All Frames": "frames"}
 SENSITIVITY = {"Conservative": 1.0, "Balanced": 0.05, "Sensitive": 0.02}

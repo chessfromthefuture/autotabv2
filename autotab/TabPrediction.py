@@ -120,8 +120,16 @@ def load_model_and_weights(weights_path=None):
     return load_pretrained(weights_path or MODEL_PATH)
 
 
-def load_x_new(filename):
-    return TabDataReprGen().load_rep_from_raw_file(filename)
+def load_x_new(source, isolate=False):
+    """Model input for an audio file. With ``isolate=True`` the guitar is first
+    separated from the mix with Demucs (needs the ``separate`` extra)."""
+    gen = TabDataReprGen()
+    if isolate:
+        from autotab.separate import isolate_guitar
+
+        audio, sr = isolate_guitar(source)
+        return gen.load_rep_from_audio(audio, sr)
+    return gen.load_rep_from_raw_file(source)
 
 
 def predict_tab(
@@ -131,15 +139,18 @@ def predict_tab(
     num_div=4,
     len_div=16,
     silence_weight=DEFAULT_SILENCE_WEIGHT,
+    isolate=False,
 ) -> str:
     """End-to-end: audio (path or file-like) -> ASCII tablature.
 
     mode: "simple" (mode over 9-frame windows), "rhythm" (keep fret changes),
     or "frames" (every frame).
     silence_weight: multiplier on the "not played" class; 1.0 is the raw
-    model, smaller values make it write more notes (see autotab.evaluate)."""
+    model, smaller values make it write more notes (see autotab.evaluate).
+    isolate: run Demucs first to strip vocals, drums, bass and keys from a
+    full song so only the guitar is transcribed."""
     model = model or load_model_and_weights()
-    x_new = load_x_new(source)
+    x_new = load_x_new(source, isolate=isolate)
     y_pred = apply_silence_weight(model.predict(x_new, verbose=0), silence_weight)
     all_frames = make_smart_tab(y_pred)
     if mode == "simple":

@@ -64,3 +64,34 @@ def test_best_frame_keeps_every_pitch_once():
     pitches = [p for p in te.frame_to_midi(best) if p != -1]
     assert sorted(set(pitches)) == sorted({p for p in te.frame_to_midi(curr) if p != -1})
     assert len(pitches) == len(set(pitches))
+
+
+def test_predict_tab_uses_isolation_when_asked(monkeypatch, sine_wav):
+    """Regression: the isolate flag must reach the separation step."""
+    import types
+
+    import autotab.separate as separate_mod
+    from autotab.param import CON_WIN_SIZE, CQT_N_BINS
+
+    calls = []
+
+    def fake_isolate(source):
+        calls.append(source)
+        sr = 22050
+        t = np.arange(sr) / sr
+        return (0.5 * np.sin(2 * np.pi * 110 * t)).astype("float32"), sr
+
+    monkeypatch.setattr(separate_mod, "isolate_guitar", fake_isolate)
+
+    class FakeModel:
+        def predict(self, x, verbose=0):
+            assert x.shape[1:] == (CQT_N_BINS, CON_WIN_SIZE, 1)
+            y = np.zeros((len(x), 6, NUM_CLASSES), dtype="float32")
+            y[..., 0] = 1
+            return y
+
+    fake = types.SimpleNamespace(model=FakeModel())
+    tp.predict_tab(sine_wav, model=fake.model, isolate=True)
+    assert calls == [sine_wav]
+    tp.predict_tab(sine_wav, model=fake.model, isolate=False)
+    assert calls == [sine_wav]

@@ -178,10 +178,15 @@ class TabDataReprGen:
 
     # -------------------------------------------------------------- inference
     def load_rep_from_raw_file(self, source) -> np.ndarray:
-        """Turn a wav (path or file-like object) into model input of shape
-        (n_frames, n_bins, con_win_size, 1)."""
-        data, self.sr_original = read_audio_mono(source)
-        self.sr_curr = self.sr_original
+        """Turn an audio file (path or file-like object) into model input of
+        shape (n_frames, n_bins, con_win_size, 1)."""
+        data, sr = read_audio_mono(source)
+        return self.load_rep_from_audio(data, sr)
+
+    def load_rep_from_audio(self, data: np.ndarray, sr: int) -> np.ndarray:
+        """Same as load_rep_from_raw_file but for an in-memory mono signal."""
+        self.sr_original = sr
+        self.sr_curr = sr
         repr_ = np.swapaxes(self.preprocess_audio(data), 0, 1)  # (frames, bins)
         return self.windows_from_repr(repr_)
 

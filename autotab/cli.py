@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from multiprocessing import Pool
 
@@ -22,6 +23,7 @@ def cmd_predict(args):
             num_div=args.bars,
             len_div=args.bar_len,
             silence_weight=args.silence_weight,
+            isolate=args.isolate,
         )
         if len(args.audio) > 1:
             print(f"### {path}")
@@ -29,6 +31,16 @@ def cmd_predict(args):
         if args.output:
             with open(args.output, "a" if len(args.audio) > 1 else "w") as fh:
                 fh.write(tab + "\n")
+
+
+def cmd_separate(args):
+    from autotab.separate import isolate_to_file
+
+    for path in args.audio:
+        out = args.output or f"{os.path.splitext(path)[0]}_guitar.wav"
+        written = isolate_to_file(path, out, stems=args.stems, model=args.model, device=args.device)
+        for stem, target in written.items():
+            print(f"{stem}: {target}")
 
 
 def _preprocess_one(job):
@@ -122,7 +134,20 @@ def build_parser():
         default=DEFAULT_SILENCE_WEIGHT,
         help="multiplier on the 'not played' class; 1.0 = raw model, lower = more notes",
     )
+    pr.add_argument(
+        "--isolate",
+        action="store_true",
+        help="separate the guitar from a full mix first (needs the 'separate' extra)",
+    )
     pr.set_defaults(func=cmd_predict)
+
+    se = sub.add_parser("separate", help="isolate the guitar (and other stems) from a full song")
+    se.add_argument("audio", nargs="+", help="wav/flac/ogg/mp3 file(s)")
+    se.add_argument("-o", "--output", help="output wav for the guitar stem (single input only)")
+    se.add_argument("--stems", nargs="+", default=["guitar"], help="e.g. guitar other vocals")
+    se.add_argument("--model", default="htdemucs_6s")
+    se.add_argument("--device", help="mps, cuda or cpu (default: best available)")
+    se.set_defaults(func=cmd_separate)
 
     ev = sub.add_parser("evaluate", help="metrics on preprocessed GuitarSet npz files")
     ev.add_argument("--weights", default=str(MODEL_PATH))

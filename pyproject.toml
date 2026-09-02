@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 app = ["streamlit>=1.40", "pillow"]
+separate = ["demucs>=4.1", "torch>=2.6", "torchaudio>=2.6"]
 viz = ["matplotlib", "pretty_midi"]
 dev = ["pytest>=8", "ruff"]
 
